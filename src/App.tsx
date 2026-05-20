@@ -45,7 +45,7 @@ import {
   ClipboardList
 } from 'lucide-react';
 import { User, UserRole, Ticket, Ban, Message, BanEvidence, AuditLog, PersonalNote } from './types';
-import { getAll, putItem, deleteItem } from './db';
+import { getAll, putItem, deleteItem, supabase } from './db';
 
 export default function App() {
   const [activeSec, setActiveSec] = useState<'home' | 'team' | 'goals' | 'tickets' | 'bans' | 'manage' | 'profile' | 'audit_logs' | 'closed_tickets' | 'my_dashboard' | 'notepad' | 'manager_notes' | 'leaderboard'>('home');
@@ -78,8 +78,8 @@ export default function App() {
   const [ticketFile, setTicketFile] = useState<File | null>(null);
   const [ticketViewMode, setTicketViewMode] = useState<'my' | 'create' | 'all' | 'directory'>('create');
   const [ticketSearchQuery, setTicketSearchQuery] = useState('');
-  const [activeTicketId, setActiveTicketId] = useState<number | null>(null);
-  const activeTicket = tickets.find(t => t.id === activeTicketId);
+  const [activeTicketId, setActiveTicketId] = useState<number | string | null>(null);
+  const activeTicket = tickets.find(t => String(t.id) === String(activeTicketId));
   const [replyInput, setReplyInput] = useState('');
   const [replyFile, setReplyFile] = useState<File | null>(null);
 
@@ -109,28 +109,112 @@ export default function App() {
     setConfirmModal({ show: true, title, message, onConfirm });
   };
 
+  // Supabase Realtime Synchronization - المزامنة الحية والريل تايم
   useEffect(() => {
-    const initData = async () => {
-      try {
-        const u = await getAll<User>('users');
-        if (u.length === 0) {
-          const defaultAdmin: User = { user: 'admin', pass: '429', role: UserRole.MANAGER, status: 'active' };
-          await putItem('users', defaultAdmin);
-          setUsers([defaultAdmin]);
-        } else {
-          setUsers(u);
-        }
-        setTickets(await getAll<Ticket>('tickets'));
-        setBans(await getAll<Ban>('bans'));
-        setAuditLogs(await getAll<AuditLog>('audit_logs'));
-        setPersonalNotes(await getAll<PersonalNote>('personal_notes'));
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
+    if (!supabase) return;
+
+    const channel = supabase.channel('public_db_changes_sync');
+
+    // 1. مزامنة جدول المستخدمين تلقائياً
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, (payload) => {
+      if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+        const newUser = payload.new as User;
+        setUsers((prev) => {
+          const index = prev.findIndex((u) => u.user === newUser.user);
+          if (index > -1) {
+            const next = [...prev];
+            next[index] = newUser;
+            return next;
+          }
+          return [...prev, newUser];
+        });
+      } else if (payload.eventType === 'DELETE') {
+        const oldUser = payload.old as { user: string };
+        setUsers((prev) => prev.filter((u) => u.user !== oldUser.user));
       }
+    });
+
+    // 2. مزامنة التذاكر والرسائل تلقائياً فورا بدون تحديث الصفحة
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'tickets' }, (payload) => {
+      if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+        const newTicket = payload.new as Ticket;
+        setTickets((prev) => {
+          const index = prev.findIndex((t) => String(t.id) === String(newTicket.id));
+          if (index > -1) {
+            const next = [...prev];
+            next[index] = newTicket;
+            return next;
+          }
+          return [...prev, newTicket];
+        });
+      } else if (payload.eventType === 'DELETE') {
+        const oldTicket = payload.old as { id: string | number };
+        setTickets((prev) => prev.filter((t) => String(t.id) !== String(oldTicket.id)));
+      }
+    });
+
+    // 3. مزامنة الباندات والمخالفات تلقائياً
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'bans' }, (payload) => {
+      if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+        const newBan = payload.new as Ban;
+        setBans((prev) => {
+          const index = prev.findIndex((b) => String(b.id) === String(newBan.id));
+          if (index > -1) {
+            const next = [...prev];
+            next[index] = newBan;
+            return next;
+          }
+          return [...prev, newBan];
+        });
+      } else if (payload.eventType === 'DELETE') {
+        const oldBan = payload.old as { id: string | number };
+        setBans((prev) => prev.filter((b) => String(b.id) !== String(oldBan.id)));
+      }
+    });
+
+    // 4. مزامنة العمليات والرقابة تلقائياً
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, (payload) => {
+      if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+        const newLog = payload.new as AuditLog;
+        setAuditLogs((prev) => {
+          const index = prev.findIndex((l) => String(l.id) === String(newLog.id));
+          if (index > -1) {
+            const next = [...prev];
+            next[index] = newLog;
+            return next;
+          }
+          return [...prev, newLog];
+        });
+      } else if (payload.eventType === 'DELETE') {
+        const oldLog = payload.old as { id: string | number };
+        setAuditLogs((prev) => prev.filter((l) => String(l.id) !== String(oldLog.id)));
+      }
+    });
+
+    // 5. مزامنة الملاحظات الشخصية للمفكرة حياً
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'personal_notes' }, (payload) => {
+      if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+        const newNote = payload.new as PersonalNote;
+        setPersonalNotes((prev) => {
+          const index = prev.findIndex((n) => String(n.id) === String(newNote.id));
+          if (index > -1) {
+            const next = [...prev];
+            next[index] = newNote;
+            return next;
+          }
+          return [...prev, newNote];
+        });
+      } else if (payload.eventType === 'DELETE') {
+        const oldNote = payload.old as { id: string | number };
+        setPersonalNotes((prev) => prev.filter((n) => String(n.id) !== String(oldNote.id)));
+      }
+    });
+
+    channel.subscribe();
+
+    return () => {
+      supabase?.removeChannel(channel);
     };
-    initData();
   }, []);
 
   // Auth Handlers
@@ -269,7 +353,7 @@ export default function App() {
   const sendReply = async () => {
     if ((!replyInput && !replyFile) || !activeTicketId || !currentUser) return;
     
-    const tIdx = tickets.findIndex(t => t.id === activeTicketId);
+    const tIdx = tickets.findIndex(t => String(t.id) === String(activeTicketId));
     if (tIdx === -1) return;
     
     const ticket = { ...tickets[tIdx] };
@@ -308,7 +392,7 @@ export default function App() {
     if (!activeTicketId || !currentUser) return;
     
     const action = async () => {
-      const tIdx = tickets.findIndex(t => t.id === activeTicketId);
+      const tIdx = tickets.findIndex(t => String(t.id) === String(activeTicketId));
       if (tIdx === -1) return;
       
       const ticket = { ...tickets[tIdx] };
