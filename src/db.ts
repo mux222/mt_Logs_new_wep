@@ -1,7 +1,9 @@
+import { createClient } from '@supabase/supabase-js';
 import { User, Ticket, Ban } from './types';
 
+// --- مخزن البيانات المحلي الاحتياطي (IndexedDB) ---
 const DB_NAME = 'MT_Logs_DB';
-const DB_VERSION = 7; // Incremented for personal_notes store
+const DB_VERSION = 7;
 
 export const openDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
@@ -45,7 +47,7 @@ export const openDB = (): Promise<IDBDatabase> => {
   });
 };
 
-export const getAll = <T>(storeName: string): Promise<T[]> => {
+const localGetAll = <T>(storeName: string): Promise<T[]> => {
   return openDB().then((db) => {
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(storeName, 'readonly');
@@ -57,7 +59,7 @@ export const getAll = <T>(storeName: string): Promise<T[]> => {
   });
 };
 
-export const putItem = <T>(storeName: string, item: T): Promise<void> => {
+const localPutItem = <T>(storeName: string, item: T): Promise<void> => {
   return openDB().then((db) => {
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(storeName, 'readwrite');
@@ -69,7 +71,7 @@ export const putItem = <T>(storeName: string, item: T): Promise<void> => {
   });
 };
 
-export const deleteItem = (storeName: string, key: any): Promise<void> => {
+const localDeleteItem = (storeName: string, key: any): Promise<void> => {
   return openDB().then((db) => {
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(storeName, 'readwrite');
@@ -79,4 +81,80 @@ export const deleteItem = (storeName: string, key: any): Promise<void> => {
       request.onerror = () => reject(request.error);
     });
   });
+};
+
+
+// --- إعدادات ربط Supabase السحابية ---
+const env = (import.meta as any).env || {};
+const supabaseUrl = env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY || '';
+
+// إنشاء العميل السحابي فقط بحال توفرت المتغيرات في البيئة البرمجية
+export const supabase = (supabaseUrl && supabaseAnonKey)
+  ? createClient(supabaseUrl, supabaseAnonKey)
+  : null;
+
+// 1. جلب البيانات (سحابي -> ومحلي كاحتياط)
+export const getAll = async <T>(storeName: string): Promise<T[]> => {
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from(storeName)
+        .select('*');
+
+      if (error) {
+        console.error(`خطأ أثناء جلب البيانات من Supabase لجدول ${storeName}:`, error);
+        return localGetAll<T>(storeName);
+      }
+      return (data as T[]) || [];
+    } catch (e) {
+      console.error(`خطأ مفاجئ أثناء الاتصال بـ Supabase:`, e);
+      return localGetAll<T>(storeName);
+    }
+  }
+  return localGetAll<T>(storeName);
+};
+
+// 2. تحديث/حفظ البيانات (سحابي -> ومحلي كاحتياط)
+export const putItem = async <T>(storeName: string, item: T): Promise<void> => {
+  if (supabase) {
+    try {
+      const { error } = await supabase
+        .from(storeName)
+        .upsert(item as any); // استخدام any لتسهيل فحص وتوافق البيانات ديناميكياً
+
+      if (error) {
+        console.error(`خطأ أثناء حفظ البيانات في Supabase لجدول ${storeName}:`, error);
+        return localPutItem<T>(storeName, item);
+      }
+      return;
+    } catch (e) {
+      console.error(`خطأ مفاجئ أثناء الاتصال بـ Supabase لعملية الحفظ:`, e);
+      return localPutItem<T>(storeName, item);
+    }
+  }
+  return localPutItem<T>(storeName, item);
+};
+
+// 3. حذف البيانات (سحابي -> ومحلي كاحتياط)
+export const deleteItem = async (storeName: string, key: any): Promise<void> => {
+  if (supabase) {
+    try {
+      const idColumn = storeName === 'users' ? 'user' : 'id';
+      const { error } = await supabase
+        .from(storeName)
+        .delete()
+        .eq(idColumn, key);
+
+      if (error) {
+        console.error(`خطأ أثناء حذف البيانات من Supabase لجدول ${storeName}:`, error);
+        return localDeleteItem(storeName, key);
+      }
+      return;
+    } catch (e) {
+      console.error(`خطأ مفاجئ أثناء الاتصال بـ Supabase لعملية الحذف:`, e);
+      return localDeleteItem(storeName, key);
+    }
+  }
+  return localDeleteItem(storeName, key);
 };
