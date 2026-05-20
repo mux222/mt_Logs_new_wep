@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { User, Ticket, Ban } from './types';
 
-// --- مخزن البيانات المحلي الاحتياطي (IndexedDB) ---
+// --- Local Database Fallback (IndexedDB) ---
 const DB_NAME = 'MT_Logs_DB';
 const DB_VERSION = 7;
 
@@ -84,17 +84,18 @@ const localDeleteItem = (storeName: string, key: any): Promise<void> => {
 };
 
 
-// --- إعدادات ربط Supabase السحابية ---
+// --- Supabase Config ---
+// Typecast import.meta to avoid strict property checks of dev environments
 const env = (import.meta as any).env || {};
 const supabaseUrl = env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY || '';
 
-// إنشاء العميل السحابي فقط بحال توفرت المتغيرات في البيئة البرمجية
+// Create client only if configuration variables exist in env
 export const supabase = (supabaseUrl && supabaseAnonKey)
   ? createClient(supabaseUrl, supabaseAnonKey)
   : null;
 
-// 1. جلب البيانات (سحابي -> ومحلي كاحتياط)
+// 1. Get all items
 export const getAll = async <T>(storeName: string): Promise<T[]> => {
   if (supabase) {
     try {
@@ -104,6 +105,7 @@ export const getAll = async <T>(storeName: string): Promise<T[]> => {
 
       if (error) {
         console.error(`خطأ أثناء جلب البيانات من Supabase لجدول ${storeName}:`, error);
+        // Fallback to local storage
         return localGetAll<T>(storeName);
       }
       return (data as T[]) || [];
@@ -115,13 +117,13 @@ export const getAll = async <T>(storeName: string): Promise<T[]> => {
   return localGetAll<T>(storeName);
 };
 
-// 2. تحديث/حفظ البيانات (سحابي -> ومحلي كاحتياط)
+// 2. Put / Save item
 export const putItem = async <T>(storeName: string, item: T): Promise<void> => {
   if (supabase) {
     try {
       const { error } = await supabase
         .from(storeName)
-        .upsert(item as any); // استخدام any لتسهيل فحص وتوافق البيانات ديناميكياً
+        .upsert(item as any); // Cast to any to bypass extreme generic checks
 
       if (error) {
         console.error(`خطأ أثناء حفظ البيانات في Supabase لجدول ${storeName}:`, error);
@@ -136,7 +138,7 @@ export const putItem = async <T>(storeName: string, item: T): Promise<void> => {
   return localPutItem<T>(storeName, item);
 };
 
-// 3. حذف البيانات (سحابي -> ومحلي كاحتياط)
+// 3. Delete item
 export const deleteItem = async (storeName: string, key: any): Promise<void> => {
   if (supabase) {
     try {
